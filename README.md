@@ -1,44 +1,82 @@
-# ThreadGroups (`tg`)
+# ~~Chorus~~ Clawrus 🎵
 
-Orchestrate commands across groups of OpenClaw Discord threads.
+Agent thread orchestration for OpenClaw
 
 ## Install
 
 ```bash
-go install github.com/cyperx84/threadgroups@latest
+go install github.com/cyperx84/clawrus@latest
 ```
 
 ## Quick Start
 
 ```bash
 # Create sample config
-tg init
+clawrus init
 
 # Edit config with your thread IDs
-vim ~/.threadgroups/groups.yaml
+vim ~/.clawrus/groups.yaml
 
 # List groups
-tg list
+clawrus list
 
-# Send a command to all threads in a group
-tg run product-ideas "add auth flow"
+# Send a command to all threads (broadcast mode, default)
+clawrus run product-ideas "add auth flow"
+
+# Gather mode: send, collect replies, and summarize
+clawrus run product-ideas "status update" --mode gather
+
+# Gather with custom timeout
+clawrus run product-ideas "report progress" --mode gather --gather-timeout 90
 
 # Override model for the whole run
-tg run product-ideas "ship it" --model claude-opus-4-6
+clawrus run product-ideas "ship it" --model claude-opus-4-6
 
 # Show group details
-tg show product-ideas
+clawrus show product-ideas
 
 # Add a thread to a group
-tg add product-ideas 1484056775278989333 --name "AgentPulse"
+clawrus add product-ideas 1484056775278989333 --name "AgentPulse"
 
 # Remove a thread
-tg remove product-ideas 1484056775278989333
+clawrus remove product-ideas 1484056775278989333
 ```
+
+## Modes
+
+### broadcast (default)
+
+Sends the command to all threads in parallel and reports success/failure for each.
+
+```bash
+clawrus run my-group "do the thing"
+```
+
+### gather
+
+Sends the command, then polls each thread for a reply. Collects all replies and summarizes them via an LLM (OpenRouter or OpenAI).
+
+```bash
+clawrus run my-group "what's your status?" --mode gather
+```
+
+Output:
+
+```
+🎵 Clawrus — Gather Results
+Group: my-group | Mode: gather | Threads: 4
+
+[AgentPulse] "All tasks complete, ready for review"
+[SkillVault] "Processing batch 3 of 5"
+
+📋 Summary: AgentPulse is done and ready for review. SkillVault is still processing (batch 3/5).
+```
+
+Set `OPENROUTER_API_KEY` or `OPENAI_API_KEY` for LLM summarization. Without a key, raw replies are printed.
 
 ## Config
 
-`~/.threadgroups/groups.yaml` (or `THREADGROUPS_CONFIG` env):
+`~/.clawrus/groups.yaml` (or `CLAWRUS_CONFIG` env):
 
 ```yaml
 groups:
@@ -65,7 +103,9 @@ groups:
 | `OPENCLAW_URL` | `http://localhost:3260` | OpenClaw gateway URL |
 | `OPENCLAW_API_KEY` | | Gateway API key |
 | `OPENCLAW_AGENT_ID` | | Target agent ID |
-| `THREADGROUPS_CONFIG` | `~/.threadgroups/groups.yaml` | Config file path |
+| `CLAWRUS_CONFIG` | `~/.clawrus/groups.yaml` | Config file path |
+| `OPENROUTER_API_KEY` | | OpenRouter API key (for gather summaries) |
+| `OPENAI_API_KEY` | | OpenAI API key (fallback for gather summaries) |
 
 ## Priority (model/thinking/timeout)
 

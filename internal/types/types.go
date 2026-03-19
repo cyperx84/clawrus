@@ -24,8 +24,9 @@ type Thread struct {
 
 // RunResult captures the outcome of sending to a single thread
 type RunResult struct {
-	ThreadID  string `json:"thread_id"`
+	ThreadID   string `json:"thread_id"`
 	ThreadName string `json:"thread_name,omitempty"`
-	OK        bool   `json:"ok"`
-	Error     string `json:"error,omitempty"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+	Reply      string `json:"reply,omitempty"`
 }

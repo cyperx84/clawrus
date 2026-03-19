@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/cyperx84/threadgroups/internal/cli"
+	"github.com/cyperx84/clawrus/internal/cli"
 )
 
 func main() {

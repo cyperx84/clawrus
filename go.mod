@@ -1,4 +1,4 @@
-module github.com/cyperx84/threadgroups
+module github.com/cyperx84/clawrus
 
 go 1.26.1
 

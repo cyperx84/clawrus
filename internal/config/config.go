@@ -4,16 +4,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cyperx84/threadgroups/internal/types"
+	"github.com/cyperx84/clawrus/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
 func ConfigPath() string {
-	if p := os.Getenv("THREADGROUPS_CONFIG"); p != "" {
+	if p := os.Getenv("CLAWRUS_CONFIG"); p != "" {
 		return p
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".threadgroups", "groups.yaml")
+	return filepath.Join(home, ".clawrus", "groups.yaml")
 }
 
 func Load() (*types.GroupConfig, error) {
