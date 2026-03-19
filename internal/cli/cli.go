@@ -32,12 +32,13 @@ func RootCmd() *cobra.Command {
 	root.PersistentFlags().IntVar(&flagTimeout, "timeout", 300, "Per-thread timeout in seconds")
 	root.PersistentFlags().IntVar(&flagParallel, "parallel", 4, "Max concurrent threads")
 
-	root.AddCommand(listCmd())
+	root.AddCommand(groupCmd())
 	root.AddCommand(runCmd())
-	root.AddCommand(addCmd())
-	root.AddCommand(removeCmd())
-	root.AddCommand(showCmd())
 	root.AddCommand(initCmd())
+
+	// Top-level aliases for group list and group show
+	root.AddCommand(listAliasCmd())
+	root.AddCommand(showAliasCmd())
 
 	return root
 }
@@ -85,6 +86,372 @@ func getGateway() *gateway.Client {
 	return gateway.NewClient(baseURL, apiKey, agentID)
 }
 
+// groupCmd is the parent command for all group management subcommands
+func groupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "group",
+		Short: "Manage thread groups",
+		Long:  "Create, modify, and inspect thread groups. All changes are persisted to ~/.clawrus/groups.yaml.",
+	}
+	cmd.AddCommand(groupNewCmd())
+	cmd.AddCommand(groupDeleteCmd())
+	cmd.AddCommand(groupAddCmd())
+	cmd.AddCommand(groupRemoveCmd())
+	cmd.AddCommand(groupListCmd())
+	cmd.AddCommand(groupShowCmd())
+	cmd.AddCommand(groupCloneCmd())
+	cmd.AddCommand(groupSetCmd())
+	return cmd
+}
+
+// groupNewCmd creates an empty group
+func groupNewCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "new <name>",
+		Short: "Create an empty group",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			if _, exists := cfg.Groups[name]; exists {
+				return fmt.Errorf("group %q already exists", name)
+			}
+			cfg.Groups[name] = types.Group{Threads: []types.Thread{}}
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Created group %q\n", name)
+			return nil
+		},
+	}
+}
+
+// groupDeleteCmd dissolves a group
+func groupDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a group",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			if _, exists := cfg.Groups[name]; !exists {
+				return fmt.Errorf("group %q not found", name)
+			}
+			delete(cfg.Groups, name)
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted group %q\n", name)
+			return nil
+		},
+	}
+}
+
+// groupAddCmd adds a thread to a group
+func groupAddCmd() *cobra.Command {
+	var (
+		addName     string
+		addModel    string
+		addThinking string
+	)
+	cmd := &cobra.Command{
+		Use:   "add <group> <thread-id>",
+		Short: "Add a thread to a group",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			groupName, threadID := args[0], args[1]
+			g, ok := cfg.Groups[groupName]
+			if !ok {
+				return fmt.Errorf("group %q not found (use `clawrus group new %s` first)", groupName, groupName)
+			}
+			for _, t := range g.Threads {
+				if t.ID == threadID {
+					return fmt.Errorf("thread %s already in group %s", threadID, groupName)
+				}
+			}
+			label := addName
+			if label == "" {
+				label = threadID
+			}
+			thread := types.Thread{ID: threadID, Name: label}
+			if addModel != "" {
+				thread.Model = addModel
+			}
+			if addThinking != "" {
+				thread.Thinking = addThinking
+			}
+			g.Threads = append(g.Threads, thread)
+			cfg.Groups[groupName] = g
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Added %s to %s\n", label, groupName)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&addName, "name", "", "Thread label (defaults to thread ID)")
+	cmd.Flags().StringVar(&addModel, "model", "", "Thread-specific model override")
+	cmd.Flags().StringVar(&addThinking, "thinking", "", "Thread-specific thinking override")
+	return cmd
+}
+
+// groupRemoveCmd removes a thread by ID or name label
+func groupRemoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove <group> <thread-id-or-label>",
+		Short: "Remove a thread from a group (by ID or name)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			groupName, needle := args[0], args[1]
+			g, ok := cfg.Groups[groupName]
+			if !ok {
+				return fmt.Errorf("group %q not found", groupName)
+			}
+			found := false
+			newThreads := []types.Thread{}
+			for _, t := range g.Threads {
+				if t.ID == needle || t.Name == needle {
+					found = true
+				} else {
+					newThreads = append(newThreads, t)
+				}
+			}
+			if !found {
+				return fmt.Errorf("thread %q not found in group %s (checked both ID and name)", needle, groupName)
+			}
+			g.Threads = newThreads
+			cfg.Groups[groupName] = g
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Removed %s from %s\n", needle, groupName)
+			return nil
+		},
+	}
+}
+
+// groupCloneCmd deep-copies a group
+func groupCloneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "clone <src> <dst>",
+		Short: "Clone a group into a new name",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			src, dst := args[0], args[1]
+			g, ok := cfg.Groups[src]
+			if !ok {
+				return fmt.Errorf("source group %q not found", src)
+			}
+			if _, exists := cfg.Groups[dst]; exists {
+				return fmt.Errorf("destination group %q already exists", dst)
+			}
+			// Deep copy threads
+			cloned := types.Group{
+				Model:    g.Model,
+				Thinking: g.Thinking,
+				Timeout:  g.Timeout,
+				Threads:  make([]types.Thread, len(g.Threads)),
+			}
+			copy(cloned.Threads, g.Threads)
+			cfg.Groups[dst] = cloned
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Cloned %s → %s (%d threads)\n", src, dst, len(cloned.Threads))
+			return nil
+		},
+	}
+}
+
+// groupSetCmd updates group-level defaults without touching threads
+func groupSetCmd() *cobra.Command {
+	var (
+		setModel    string
+		setThinking string
+		setTimeout  int
+	)
+	cmd := &cobra.Command{
+		Use:   "set <name>",
+		Short: "Update group defaults (model, thinking, timeout)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			g, ok := cfg.Groups[name]
+			if !ok {
+				return fmt.Errorf("group %q not found", name)
+			}
+			changed := false
+			if cmd.Flags().Changed("model") {
+				g.Model = setModel
+				changed = true
+			}
+			if cmd.Flags().Changed("thinking") {
+				g.Thinking = setThinking
+				changed = true
+			}
+			if cmd.Flags().Changed("timeout") {
+				g.Timeout = setTimeout
+				changed = true
+			}
+			if !changed {
+				return fmt.Errorf("no flags provided; use --model, --thinking, or --timeout")
+			}
+			cfg.Groups[name] = g
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Updated group %q\n", name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&setModel, "model", "", "Group default model")
+	cmd.Flags().StringVar(&setThinking, "thinking", "", "Group default thinking mode")
+	cmd.Flags().IntVar(&setTimeout, "timeout", 0, "Group default timeout in seconds")
+	return cmd
+}
+
+// groupListCmd shows all groups
+func groupListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "list",
+		Short:   "List all thread groups",
+		Aliases: []string{"ls"},
+		RunE:    listRunE,
+	}
+}
+
+// groupShowCmd shows details of a single group
+func groupShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <group>",
+		Short: "Show group details and thread list",
+		Args:  cobra.ExactArgs(1),
+		RunE:  showRunE,
+	}
+}
+
+// listAliasCmd is a top-level shortcut for `group list`
+func listAliasCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "list",
+		Short:   "List all thread groups (alias for group list)",
+		Aliases: []string{"ls"},
+		RunE:    listRunE,
+	}
+}
+
+// showAliasCmd is a top-level shortcut for `group show`
+func showAliasCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <group>",
+		Short: "Show group details (alias for group show)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  showRunE,
+	}
+}
+
+// listRunE is the shared implementation for list commands
+func listRunE(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if len(cfg.Groups) == 0 {
+		fmt.Println("No groups configured. Run `clawrus init` to create a sample config.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "GROUP\tTHREADS\tMODEL\tTHINKING\tTIMEOUT")
+	for name, g := range cfg.Groups {
+		model := g.Model
+		if flagModel != "" {
+			model = flagModel + " (override)"
+		}
+		thinking := g.Thinking
+		if flagThinking != "" {
+			thinking = flagThinking + " (override)"
+		}
+		if thinking == "" {
+			thinking = "-"
+		}
+		if model == "" {
+			model = "(default)"
+		}
+		timeout := fmt.Sprintf("%ds", g.Timeout)
+		if g.Timeout == 0 {
+			timeout = "300s"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", name, len(g.Threads), model, thinking, timeout)
+	}
+	w.Flush()
+	return nil
+}
+
+// showRunE is the shared implementation for show commands
+func showRunE(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	g, ok := cfg.Groups[args[0]]
+	if !ok {
+		return fmt.Errorf("group %q not found", args[0])
+	}
+	fmt.Printf("Group: %s\n", args[0])
+	if g.Model != "" {
+		fmt.Printf("  Model:    %s\n", g.Model)
+	}
+	if g.Thinking != "" {
+		fmt.Printf("  Thinking: %s\n", g.Thinking)
+	}
+	if g.Timeout != 0 {
+		fmt.Printf("  Timeout:  %ds\n", g.Timeout)
+	}
+	fmt.Printf("  Threads:  %d\n\n", len(g.Threads))
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "  NAME\tID\tMODEL\tTHINKING")
+	for _, t := range g.Threads {
+		name := t.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		model := t.Model
+		if model == "" {
+			model = "(inherit)"
+		}
+		thinking := t.Thinking
+		if thinking == "" {
+			thinking = "(inherit)"
+		}
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", name, t.ID, model, thinking)
+	}
+	w.Flush()
+	return nil
+}
+
 // initCmd creates a sample config
 func initCmd() *cobra.Command {
 	return &cobra.Command{
@@ -112,128 +479,77 @@ func initCmd() *cobra.Command {
 	}
 }
 
-// listCmd shows all groups
-func listCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:     "list",
-		Short:   "List all thread groups",
-		Aliases: []string{"ls"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			if len(cfg.Groups) == 0 {
-				fmt.Println("No groups configured. Run `clawrus init` to create a sample config.")
-				return nil
-			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "GROUP\tTHREADS\tMODEL\tTHINKING\tTIMEOUT")
-			for name, g := range cfg.Groups {
-				model := g.Model
-				if flagModel != "" {
-					model = flagModel + " (override)"
-				}
-				thinking := g.Thinking
-				if flagThinking != "" {
-					thinking = flagThinking + " (override)"
-				}
-				if thinking == "" {
-					thinking = "-"
-				}
-				if model == "" {
-					model = "(default)"
-				}
-				timeout := fmt.Sprintf("%ds", g.Timeout)
-				if g.Timeout == 0 {
-					timeout = "300s"
-				}
-				fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", name, len(g.Threads), model, thinking, timeout)
-			}
-			w.Flush()
-			return nil
-		},
-	}
-}
-
-// showCmd shows details of a single group
-func showCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "show <group>",
-		Short: "Show group details and thread list",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			g, ok := cfg.Groups[args[0]]
-			if !ok {
-				return fmt.Errorf("group %q not found", args[0])
-			}
-			fmt.Printf("Group: %s\n", args[0])
-			if g.Model != "" {
-				fmt.Printf("  Model:    %s\n", g.Model)
-			}
-			if g.Thinking != "" {
-				fmt.Printf("  Thinking: %s\n", g.Thinking)
-			}
-			if g.Timeout != 0 {
-				fmt.Printf("  Timeout:  %ds\n", g.Timeout)
-			}
-			fmt.Printf("  Threads:  %d\n\n", len(g.Threads))
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "  NAME\tID\tMODEL\tTHINKING")
-			for _, t := range g.Threads {
-				name := t.Name
-				if name == "" {
-					name = "(unnamed)"
-				}
-				model := t.Model
-				if model == "" {
-					model = "(inherit)"
-				}
-				thinking := t.Thinking
-				if thinking == "" {
-					thinking = "(inherit)"
-				}
-				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", name, t.ID, model, thinking)
-			}
-			w.Flush()
-			return nil
-		},
-	}
-}
-
-// runCmd fans out a command to all threads in a group
+// runCmd fans out a command to threads — either from a named group or ad-hoc --threads
 func runCmd() *cobra.Command {
 	var (
 		flagMode          string
 		flagGatherTimeout int
+		flagThreads       string
 	)
 	cmd := &cobra.Command{
-		Use:   "run <group> <command...>",
-		Short: "Send a command to all threads in a group",
-		Args:  cobra.MinimumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			groupName := args[0]
-			command := strings.Join(args[1:], " ")
+		Use:   "run [<group>] <command...>",
+		Short: "Send a command to all threads in a group or ad-hoc thread list",
+		Long: `Send a command to threads. Two modes:
 
-			g, ok := cfg.Groups[groupName]
-			if !ok {
-				return fmt.Errorf("group %q not found", args[0])
+  Named group:   clawrus run <group-name> "message"
+  Ad-hoc:        clawrus run --threads <id1>,<id2> "message"
+
+Ad-hoc runs are ephemeral — nothing is saved to config.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var threads []types.Thread
+			var groupName string
+			var g types.Group
+
+			if flagThreads != "" {
+				// Ad-hoc mode: --threads flag provided
+				ids := strings.Split(flagThreads, ",")
+				for _, id := range ids {
+					id = strings.TrimSpace(id)
+					if id == "" {
+						continue
+					}
+					threads = append(threads, types.Thread{ID: id, Name: id})
+				}
+				if len(threads) == 0 {
+					return fmt.Errorf("--threads requires at least one thread ID")
+				}
+				g = types.Group{Threads: threads}
+				groupName = "(ad-hoc)"
+				// All args are the command
+				if len(args) == 0 {
+					return fmt.Errorf("command required")
+				}
+			} else {
+				// Named group mode
+				if len(args) < 2 {
+					return fmt.Errorf("usage: clawrus run <group> <command...> or clawrus run --threads <ids> <command...>")
+				}
+				cfg, err := config.Load()
+				if err != nil {
+					return err
+				}
+				groupName = args[0]
+				args = args[1:]
+				var ok bool
+				g, ok = cfg.Groups[groupName]
+				if !ok {
+					return fmt.Errorf("group %q not found", groupName)
+				}
+				threads = g.Threads
+			}
+
+			command := strings.Join(args, " ")
+			if flagThreads != "" {
+				command = strings.Join(args, " ")
 			}
 
 			gw := getGateway()
-			results := make([]types.RunResult, len(g.Threads))
+			results := make([]types.RunResult, len(threads))
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, flagParallel)
 
-			for i, t := range g.Threads {
+			for i, t := range threads {
 				wg.Add(1)
 				go func(idx int, thread types.Thread) {
 					defer wg.Done()
@@ -289,6 +605,7 @@ func runCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flagMode, "mode", "broadcast", "Run mode: broadcast or gather")
 	cmd.Flags().IntVar(&flagGatherTimeout, "gather-timeout", 60, "Gather mode timeout in seconds")
+	cmd.Flags().StringVar(&flagThreads, "threads", "", "Comma-separated thread IDs for ad-hoc run (no group needed)")
 	return cmd
 }
 
@@ -344,93 +661,4 @@ func runGather(gw *gateway.Client, g types.Group, groupName string, results []ty
 	}
 
 	return nil
-}
-
-// addCmd adds a thread to a group
-func addCmd() *cobra.Command {
-	var (
-		addName     string
-		addModel    string
-		addThinking string
-	)
-	cmd := &cobra.Command{
-		Use:   "add <group> <thread-id>",
-		Short: "Add a thread to a group",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			groupName, threadID := args[0], args[1]
-			g, ok := cfg.Groups[groupName]
-			if !ok {
-				g = types.Group{Threads: []types.Thread{}}
-				cfg.Groups[groupName] = g
-			}
-			// Check for duplicate
-			for _, t := range g.Threads {
-				if t.ID == threadID {
-					return fmt.Errorf("thread %s already in group %s", threadID, groupName)
-				}
-			}
-			thread := types.Thread{ID: threadID, Name: addName}
-			if addModel != "" {
-				thread.Model = addModel
-			}
-			if addThinking != "" {
-				thread.Thinking = addThinking
-			}
-			g.Threads = append(g.Threads, thread)
-			cfg.Groups[groupName] = g
-			if err := config.Save(cfg); err != nil {
-				return err
-			}
-			fmt.Printf("Added %s to %s\n", addName, groupName)
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&addName, "name", "", "Thread name")
-	cmd.Flags().StringVar(&addModel, "model", "", "Thread-specific model override")
-	cmd.Flags().StringVar(&addThinking, "thinking", "", "Thread-specific thinking override")
-	return cmd
-}
-
-// removeCmd removes a thread from a group
-func removeCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "remove <group> <thread-id>",
-		Short: "Remove a thread from a group",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			groupName, threadID := args[0], args[1]
-			g, ok := cfg.Groups[groupName]
-			if !ok {
-				return fmt.Errorf("group %q not found", groupName)
-			}
-			found := false
-			newThreads := []types.Thread{}
-			for _, t := range g.Threads {
-				if t.ID == threadID {
-					found = true
-				} else {
-					newThreads = append(newThreads, t)
-				}
-			}
-			if !found {
-				return fmt.Errorf("thread %s not in group %s", threadID, groupName)
-			}
-			g.Threads = newThreads
-			cfg.Groups[groupName] = g
-			if err := config.Save(cfg); err != nil {
-				return err
-			}
-			fmt.Printf("Removed %s from %s\n", threadID, groupName)
-			return nil
-		},
-	}
 }
