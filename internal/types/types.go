@@ -17,9 +17,10 @@ type Group struct {
 type Thread struct {
 	ID       string `yaml:"id" json:"id"`
 	Name     string `yaml:"name,omitempty" json:"name,omitempty"`
-	Model    string `yaml:"model,omitempty" json:"model,omitempty"`    // per-thread override
+	Model    string `yaml:"model,omitempty" json:"model,omitempty"`       // per-thread override
 	Thinking string `yaml:"thinking,omitempty" json:"thinking,omitempty"` // per-thread override
-	Timeout  int    `yaml:"timeout,omitempty" json:"timeout,omitempty"`    // per-thread override
+	Timeout  int    `yaml:"timeout,omitempty" json:"timeout,omitempty"`   // per-thread override
+	Prompt   string `yaml:"prompt,omitempty" json:"prompt,omitempty"`     // per-thread prompt
 }
 
 // RunResult captures the outcome of sending to a single thread

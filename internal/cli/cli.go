@@ -101,6 +101,7 @@ func groupCmd() *cobra.Command {
 	cmd.AddCommand(groupShowCmd())
 	cmd.AddCommand(groupCloneCmd())
 	cmd.AddCommand(groupSetCmd())
+	cmd.AddCommand(groupSetPromptCmd())
 	return cmd
 }
 
@@ -160,6 +161,7 @@ func groupAddCmd() *cobra.Command {
 		addName     string
 		addModel    string
 		addThinking string
+		addPrompt   string
 	)
 	cmd := &cobra.Command{
 		Use:   "add <group> <thread-id>",
@@ -191,6 +193,9 @@ func groupAddCmd() *cobra.Command {
 			if addThinking != "" {
 				thread.Thinking = addThinking
 			}
+			if addPrompt != "" {
+				thread.Prompt = addPrompt
+			}
 			g.Threads = append(g.Threads, thread)
 			cfg.Groups[groupName] = g
 			if err := config.Save(cfg); err != nil {
@@ -203,6 +208,7 @@ func groupAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&addName, "name", "", "Thread label (defaults to thread ID)")
 	cmd.Flags().StringVar(&addModel, "model", "", "Thread-specific model override")
 	cmd.Flags().StringVar(&addThinking, "thinking", "", "Thread-specific thinking override")
+	cmd.Flags().StringVar(&addPrompt, "prompt", "", "Per-thread prompt (sent instead of positional message)")
 	return cmd
 }
 
@@ -333,6 +339,43 @@ func groupSetCmd() *cobra.Command {
 	return cmd
 }
 
+// groupSetPromptCmd sets/updates the prompt for an existing thread in a group
+func groupSetPromptCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-prompt <group> <thread-id-or-label> <prompt>",
+		Short: "Set or update the prompt for a thread in a group",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			groupName, needle, prompt := args[0], args[1], args[2]
+			g, ok := cfg.Groups[groupName]
+			if !ok {
+				return fmt.Errorf("group %q not found", groupName)
+			}
+			found := false
+			for i, t := range g.Threads {
+				if t.ID == needle || t.Name == needle {
+					g.Threads[i].Prompt = prompt
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("thread %q not found in group %s (checked both ID and name)", needle, groupName)
+			}
+			cfg.Groups[groupName] = g
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Set prompt for %s in %s\n", needle, groupName)
+			return nil
+		},
+	}
+}
+
 // groupListCmd shows all groups
 func groupListCmd() *cobra.Command {
 	return &cobra.Command{
@@ -432,7 +475,7 @@ func showRunE(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Threads:  %d\n\n", len(g.Threads))
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "  NAME\tID\tMODEL\tTHINKING")
+	fmt.Fprintln(w, "  NAME\tID\tMODEL\tTHINKING\tPROMPT")
 	for _, t := range g.Threads {
 		name := t.Name
 		if name == "" {
@@ -446,7 +489,13 @@ func showRunE(cmd *cobra.Command, args []string) error {
 		if thinking == "" {
 			thinking = "(inherit)"
 		}
-		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", name, t.ID, model, thinking)
+		prompt := t.Prompt
+		if prompt == "" {
+			prompt = "-"
+		} else if len(prompt) > 40 {
+			prompt = prompt[:37] + "..."
+		}
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", name, t.ID, model, thinking, prompt)
 	}
 	w.Flush()
 	return nil
@@ -522,9 +571,6 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 				}
 			} else {
 				// Named group mode
-				if len(args) < 2 {
-					return fmt.Errorf("usage: clawrus run <group> <command...> or clawrus run --threads <ids> <command...>")
-				}
 				cfg, err := config.Load()
 				if err != nil {
 					return err
@@ -537,12 +583,22 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 					return fmt.Errorf("group %q not found", groupName)
 				}
 				threads = g.Threads
+
+				// Check if any thread has a per-thread prompt
+				hasPerThreadPrompts := false
+				for _, t := range threads {
+					if t.Prompt != "" {
+						hasPerThreadPrompts = true
+						break
+					}
+				}
+				// Require a command arg unless threads have per-thread prompts
+				if len(args) == 0 && !hasPerThreadPrompts {
+					return fmt.Errorf("usage: clawrus run <group> <command...> or clawrus run --threads <ids> <command...>")
+				}
 			}
 
 			command := strings.Join(args, " ")
-			if flagThreads != "" {
-				command = strings.Join(args, " ")
-			}
 
 			gw := getGateway()
 			results := make([]types.RunResult, len(threads))
@@ -565,7 +621,15 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 						name = thread.ID
 					}
 
-					resp, err := gw.SendMessage(thread.ID, command, model, thinking, timeout)
+					// Per-thread prompt takes priority over positional command
+					msg := command
+					if thread.Prompt != "" {
+						msg = thread.Prompt
+					}
+
+					fmt.Printf("→ %s: %q\n", name, msg)
+
+					resp, err := gw.SendMessage(thread.ID, msg, model, thinking, timeout)
 					if err != nil {
 						results[idx] = types.RunResult{ThreadID: thread.ID, ThreadName: name, OK: false, Error: err.Error()}
 						return

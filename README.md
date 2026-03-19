@@ -38,6 +38,18 @@ clawrus show product-ideas
 # Add a thread to a group
 clawrus add product-ideas 1484056775278989333 --name "AgentPulse"
 
+# Add a thread with a per-thread prompt
+clawrus group add my-sprint 1484056775 --name AgentPulse --prompt "Add Supabase auth — email + GitHub OAuth"
+clawrus group add my-sprint 1484056779 --name SkillVault --prompt "Add Stripe checkout for premium skills"
+
+# Run with per-thread prompts (each thread gets its own prompt)
+clawrus run my-sprint
+# → AgentPulse: "Add Supabase auth — email + GitHub OAuth"
+# → SkillVault: "Add Stripe checkout for premium skills"
+
+# Update a thread's prompt
+clawrus group set-prompt my-sprint AgentPulse "Implement SSO with SAML"
+
 # Remove a thread
 clawrus remove product-ideas 1484056775278989333
 ```
@@ -90,6 +102,7 @@ groups:
       - id: "1484056779322036234"
         name: "SkillVault"
         model: glm-5-turbo    # per-thread override
+        prompt: "Add Stripe checkout for premium skills"  # per-thread prompt
       - id: "1484056767544688690"
         name: "ClawApps"
       - id: "1484056771092938773"
