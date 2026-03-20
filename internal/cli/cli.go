@@ -854,9 +854,15 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 						msg = thread.Prompt
 					}
 
+					// Resolve preset display name for context header
+					presetDisplay := ""
+					if strings.HasPrefix(groupName, "@") {
+						presetDisplay = groupName
+					}
+
 					fmt.Printf("→ %s: %q\n", name, msg)
 
-					resp, err := gw.SendMessage(thread.ID, msg, model, thinking, timeout)
+					resp, err := gw.SendMessage(thread.ID, msg, model, thinking, groupName, presetDisplay, timeout)
 					if err != nil {
 						results[idx] = types.RunResult{ThreadID: thread.ID, ThreadName: name, OK: false, Error: err.Error()}
 						return

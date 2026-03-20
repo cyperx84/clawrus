@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"path/filepath"
 	"time"
 )
@@ -109,8 +110,9 @@ func pingGateway(baseURL string) bool {
 
 // SendMessage sends a message to a thread via /tools/invoke
 type ToolInvokeRequest struct {
-	Tool string                 `json:"tool"`
-	Args map[string]interface{} `json:"args"`
+	Tool       string                 `json:"tool"`
+	Args       map[string]interface{} `json:"args"`
+	SessionKey string                 `json:"sessionKey,omitempty"`
 }
 
 type SendResponse struct {
@@ -120,9 +122,33 @@ type SendResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
-func (c *Client) SendMessage(threadID, message, model, thinking string, timeout time.Duration) (*SendResponse, error) {
+func (c *Client) SendMessage(threadID, message, model, thinking, groupName, presetName string, timeout time.Duration) (*SendResponse, error) {
+	// Prepend orchestration context so threads know they are being managed
+	var header string
+	if groupName != "" || presetName != "" || model != "" {
+		parts := []string{}
+		if groupName != "" {
+			parts = append(parts, "group: "+groupName)
+		}
+		if presetName != "" {
+			parts = append(parts, "preset: "+presetName)
+		}
+		if model != "" {
+			parts = append(parts, "model: "+model)
+		}
+		header = "**[clawrus]** " + strings.Join(parts, " · ") + "\n"
+	}
+
+	// Prepend model directive for session agent routing
+	if model != "" {
+		message = "[model:" + model + "] " + message
+	}
+
+	message = header + message
+
 	reqBody := ToolInvokeRequest{
-		Tool: "message",
+		Tool:       "message",
+		SessionKey: "channel:" + threadID,
 		Args: map[string]interface{}{
 			"action":  "send",
 			"channel": "discord",
