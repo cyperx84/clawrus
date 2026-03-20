@@ -91,7 +91,8 @@ func getGateway() *gateway.Client {
 		os.Exit(1)
 	}
 
-	return gateway.NewClient(baseURL, "", "")
+	authToken := gateway.DiscoverAuthToken()
+	return gateway.NewClient(baseURL, authToken, "")
 }
 
 // groupCmd is the parent command for all group management subcommands

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -56,6 +58,36 @@ func DiscoverGateway(flagURL, configURL string) (string, error) {
 
 	// 5. Nothing found
 	return "", fmt.Errorf("OpenClaw gateway not found. Is it running? (openclaw gateway status)")
+}
+
+// DiscoverAuthToken resolves the gateway auth token.
+// Priority: OPENCLAW_TOKEN env var > ~/.openclaw/openclaw.json gateway.auth.token > empty.
+func DiscoverAuthToken() string {
+	if token := os.Getenv("OPENCLAW_TOKEN"); token != "" {
+		return token
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".openclaw", "openclaw.json"))
+	if err != nil {
+		return ""
+	}
+
+	var cfg struct {
+		Gateway struct {
+			Auth struct {
+				Token string `json:"token"`
+			} `json:"auth"`
+		} `json:"gateway"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return cfg.Gateway.Auth.Token
 }
 
 // pingGateway checks if a gateway is responding at the given URL.
@@ -111,6 +143,9 @@ func (c *Client) SendMessage(threadID, message, model, thinking string, timeout 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -195,6 +230,9 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 			return "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if c.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
