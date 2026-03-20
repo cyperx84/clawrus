@@ -311,11 +311,8 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 			continue
 		}
 
-		// Messages are returned newest-first; find the first non-bot message after afterID.
+		// Messages are returned newest-first; find the first message after afterID.
 		for _, msg := range envelope.Result.Details.Messages {
-			if msg.Author.Bot {
-				continue
-			}
 			if afterID > 0 && msg.ID != "" {
 				msgID, err := strconv.ParseUint(msg.ID, 10, 64)
 				if err != nil || msgID <= afterID {
