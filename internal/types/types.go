@@ -33,6 +33,16 @@ type Thread struct {
 	Prompt   string `yaml:"prompt,omitempty" json:"prompt,omitempty"`     // per-thread prompt
 }
 
+// PresetConfig is the top-level presets file structure
+type PresetConfig struct {
+	Presets map[string]Preset `yaml:"presets" json:"presets"`
+}
+
+// Preset maps a short name to one or more groups
+type Preset struct {
+	Groups []string `yaml:"groups" json:"groups"`
+}
+
 // RunResult captures the outcome of sending to a single thread
 type RunResult struct {
 	ThreadID   string `json:"thread_id"`

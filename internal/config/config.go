@@ -8,6 +8,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PresetPath returns the path to ~/.clawrus/presets.yaml
+func PresetPath() string {
+	return filepath.Join(ConfigDir(), "presets.yaml")
+}
+
+// LoadPresets loads ~/.clawrus/presets.yaml
+func LoadPresets() (*types.PresetConfig, error) {
+	p := PresetPath()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &types.PresetConfig{Presets: make(map[string]types.Preset)}, nil
+		}
+		return nil, err
+	}
+	var cfg types.PresetConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Presets == nil {
+		cfg.Presets = make(map[string]types.Preset)
+	}
+	return &cfg, nil
+}
+
+// SavePresets writes ~/.clawrus/presets.yaml
+func SavePresets(cfg *types.PresetConfig) error {
+	p := PresetPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0644)
+}
+
 func ConfigDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".clawrus")

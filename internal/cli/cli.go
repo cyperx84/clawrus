@@ -35,6 +35,7 @@ func RootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&flagGatewayURL, "gateway-url", "", "OpenClaw gateway URL (auto-discovered if not set)")
 
 	root.AddCommand(groupCmd())
+	root.AddCommand(presetCmd())
 	root.AddCommand(runCmd())
 	root.AddCommand(initCmd())
 
@@ -112,6 +113,204 @@ func groupCmd() *cobra.Command {
 	cmd.AddCommand(groupSetCmd())
 	cmd.AddCommand(groupSetPromptCmd())
 	return cmd
+}
+
+// presetCmd is the parent command for preset management subcommands
+func presetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "preset",
+		Short: "Manage named presets (@aliases) for groups",
+		Long:  "Create, delete, and inspect presets that map short names to one or more groups.",
+	}
+	cmd.AddCommand(presetNewCmd())
+	cmd.AddCommand(presetDeleteCmd())
+	cmd.AddCommand(presetListCmd())
+	cmd.AddCommand(presetShowCmd())
+	return cmd
+}
+
+// presetNewCmd creates a preset from one or more groups
+func presetNewCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "new <name> <group1> [group2...]",
+		Short: "Create a preset from one or more groups",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			presetName := args[0]
+			groupNames := args[1:]
+
+			// Validate that all referenced groups exist
+			groupCfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			for _, gn := range groupNames {
+				if _, ok := groupCfg.Groups[gn]; !ok {
+					return fmt.Errorf("group %q not found", gn)
+				}
+			}
+
+			cfg, err := config.LoadPresets()
+			if err != nil {
+				return err
+			}
+			if _, exists := cfg.Presets[presetName]; exists {
+				return fmt.Errorf("preset %q already exists", presetName)
+			}
+			cfg.Presets[presetName] = types.Preset{Groups: groupNames}
+			if err := config.SavePresets(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Created preset @%s → %s\n", presetName, strings.Join(groupNames, ", "))
+			return nil
+		},
+	}
+}
+
+// presetDeleteCmd removes a preset
+func presetDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a preset",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadPresets()
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			if _, exists := cfg.Presets[name]; !exists {
+				return fmt.Errorf("preset %q not found", name)
+			}
+			delete(cfg.Presets, name)
+			if err := config.SavePresets(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted preset @%s\n", name)
+			return nil
+		},
+	}
+}
+
+// presetListCmd lists all presets
+func presetListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "list",
+		Short:   "List all presets",
+		Aliases: []string{"ls"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadPresets()
+			if err != nil {
+				return err
+			}
+			if len(cfg.Presets) == 0 {
+				fmt.Println("No presets configured. Use `clawrus preset new <name> <group1> [group2...]` to create one.")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			fmt.Fprintln(w, "PRESET\tGROUPS")
+			for name, p := range cfg.Presets {
+				fmt.Fprintf(w, "@%s\t%s\n", name, strings.Join(p.Groups, ", "))
+			}
+			w.Flush()
+			return nil
+		},
+	}
+}
+
+// presetShowCmd shows which groups/threads are in a preset
+func presetShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <name>",
+		Short: "Show preset details (groups and threads)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			presetCfg, err := config.LoadPresets()
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			p, ok := presetCfg.Presets[name]
+			if !ok {
+				return fmt.Errorf("preset %q not found", name)
+			}
+			groupCfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Preset: @%s\n", name)
+			fmt.Printf("  Groups: %s\n\n", strings.Join(p.Groups, ", "))
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			fmt.Fprintln(w, "  GROUP\tTHREAD\tID")
+			seen := make(map[string]bool)
+			for _, gn := range p.Groups {
+				g, ok := groupCfg.Groups[gn]
+				if !ok {
+					fmt.Fprintf(w, "  %s\t(not found)\t-\n", gn)
+					continue
+				}
+				for _, t := range g.Threads {
+					if seen[t.ID] {
+						continue
+					}
+					seen[t.ID] = true
+					threadName := t.Name
+					if threadName == "" {
+						threadName = "(unnamed)"
+					}
+					fmt.Fprintf(w, "  %s\t%s\t%s\n", gn, threadName, t.ID)
+				}
+			}
+			w.Flush()
+			fmt.Printf("\n  Total unique threads: %d\n", len(seen))
+			return nil
+		},
+	}
+}
+
+// resolvePreset expands a @preset name into a merged group with deduplicated threads.
+// Returns the merged group, a display name, and any error.
+func resolvePreset(presetName string, groupCfg *types.GroupConfig) (types.Group, string, error) {
+	presetCfg, err := config.LoadPresets()
+	if err != nil {
+		return types.Group{}, "", err
+	}
+
+	// Auto-create @all preset if no presets.yaml exists and preset is "all"
+	p, ok := presetCfg.Presets[presetName]
+	if !ok && presetName == "all" {
+		// Auto-generate @all from all known groups
+		allGroups := make([]string, 0, len(groupCfg.Groups))
+		for name := range groupCfg.Groups {
+			allGroups = append(allGroups, name)
+		}
+		if len(allGroups) == 0 {
+			return types.Group{}, "", fmt.Errorf("no groups configured")
+		}
+		p = types.Preset{Groups: allGroups}
+	} else if !ok {
+		return types.Group{}, "", fmt.Errorf("preset %q not found (use `clawrus preset list` to see available presets)", presetName)
+	}
+
+	// Merge threads from all referenced groups, deduplicating by thread ID
+	seen := make(map[string]bool)
+	var merged []types.Thread
+	for _, gn := range p.Groups {
+		g, ok := groupCfg.Groups[gn]
+		if !ok {
+			return types.Group{}, "", fmt.Errorf("preset @%s references group %q which does not exist", presetName, gn)
+		}
+		for _, t := range g.Threads {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				merged = append(merged, t)
+			}
+		}
+	}
+
+	displayName := "@" + presetName
+	return types.Group{Threads: merged}, displayName, nil
 }
 
 // groupNewCmd creates an empty group
@@ -549,11 +748,13 @@ func runCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run [<group>] <command...>",
 		Short: "Send a command to all threads in a group or ad-hoc thread list",
-		Long: `Send a command to threads. Two modes:
+		Long: `Send a command to threads. Three modes:
 
   Named group:   clawrus run <group-name> "message"
+  Preset:        clawrus run @<preset> "message"
   Ad-hoc:        clawrus run --threads <id1>,<id2> "message"
 
+Presets merge threads from multiple groups with deduplication.
 Ad-hoc runs are ephemeral — nothing is saved to config.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -581,17 +782,28 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 					return fmt.Errorf("command required")
 				}
 			} else {
-				// Named group mode
+				// Named group or @preset mode
 				cfg, err := config.Load()
 				if err != nil {
 					return err
 				}
 				groupName = args[0]
 				args = args[1:]
-				var ok bool
-				g, ok = cfg.Groups[groupName]
-				if !ok {
-					return fmt.Errorf("group %q not found", groupName)
+
+				if strings.HasPrefix(groupName, "@") {
+					// Preset mode: @name -> resolve preset -> merge groups
+					presetName := groupName[1:]
+					var resolveErr error
+					g, groupName, resolveErr = resolvePreset(presetName, cfg)
+					if resolveErr != nil {
+						return resolveErr
+					}
+				} else {
+					var ok bool
+					g, ok = cfg.Groups[groupName]
+					if !ok {
+						return fmt.Errorf("group %q not found", groupName)
+					}
 				}
 				threads = g.Threads
 
