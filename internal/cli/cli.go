@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var Version = "dev"
+
 var (
 	flagModel      string
 	flagThinking   string
@@ -24,10 +26,12 @@ var (
 
 func RootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "clawrus",
-		Short: "Clawrus — agent thread orchestration for OpenClaw",
-		Long:  "Manage and run commands against groups of OpenClaw Discord threads.",
+		Use:     "clawrus",
+		Short:   "Clawrus — agent thread orchestration for OpenClaw",
+		Long:    "Manage and run commands against groups of OpenClaw Discord threads.",
+		Version: Version,
 	}
+	root.SetVersionTemplate("clawrus v{{.Version}}\n")
 	root.PersistentFlags().StringVar(&flagModel, "model", "", "Override model for all threads")
 	root.PersistentFlags().StringVar(&flagThinking, "thinking", "", "Override thinking mode (off|low|medium|high)")
 	root.PersistentFlags().IntVar(&flagTimeout, "timeout", 300, "Per-thread timeout in seconds")

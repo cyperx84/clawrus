@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: goreleaser/goreleaser-action@v5
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: cyperx84/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Update formula
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          URL="https://github.com/cyperx84/clawrus/archive/refs/tags/${TAG}.tar.gz"
+          SHA256=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+
+          cat > Formula/clawrus.rb << FORMULA
+          class Clawrus < Formula
+            desc "Agent thread orchestration for OpenClaw"
+            homepage "https://github.com/cyperx84/clawrus"
+            url "${URL}"
+            sha256 "${SHA256}"
+            license "MIT"
+            head "https://github.com/cyperx84/clawrus.git", branch: "main"
+
+            depends_on "go" => :build
+
+            def install
+              ldflags = %W[
+                -s -w
+                -X github.com/cyperx84/clawrus/internal/cli.Version=#{version}
+              ]
+              system "go", "build", *std_go_args(ldflags: ldflags), "."
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/clawrus --version")
+              assert_match "Usage:", shell_output("#{bin}/clawrus help")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' Formula/clawrus.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/clawrus.rb
+          git commit -m "Update clawrus to ${GITHUB_REF#refs/tags/}"
+          git push
