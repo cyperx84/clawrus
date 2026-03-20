@@ -2,7 +2,7 @@
 
 **Orchestrate your AI agent fleet from the command line.**
 
-Clawrus is a CLI tool that broadcasts commands to multiple OpenClaw agent threads simultaneously, collects their replies, and summarizes the results. Think of it as `xargs` for AI agents — define groups, fire off instructions, and gather status from your entire fleet in seconds.
+Clawrus is a CLI tool for running commands across multiple OpenClaw agent threads. Define groups, broadcast instructions, chain replies through a pipeline, or sweep the fleet for status — all from one command. Think of it as `xargs` for AI agents.
 
 ## Install
 
@@ -17,11 +17,13 @@ go install github.com/cyperx84/clawrus@latest
 ## Quick Start
 
 ```bash
-clawrus init                                    # scaffold ~/.clawrus/groups.yaml
-vim ~/.clawrus/groups.yaml                      # add your thread IDs
-clawrus run my-agents "what's your status?"     # broadcast to all threads
-clawrus run my-agents "status?" --mode gather   # collect and summarize replies
-clawrus run @all "ship it"                      # hit every agent via preset
+clawrus init                                            # scaffold ~/.clawrus/groups.yaml
+vim ~/.clawrus/groups.yaml                              # add your thread IDs
+clawrus run my-agents "what's your status?"             # broadcast to all threads
+clawrus run my-agents "status?" --mode gather           # collect + LLM-summarize replies
+clawrus run chain "research X" --mode pipeline          # A's reply → B → C → ...
+clawrus run @ops "health?" --mode poll                  # quick status table, no LLM
+clawrus run @all "ship it"                              # hit every agent via preset
 ```
 
 No configuration needed beyond thread IDs — clawrus auto-discovers the OpenClaw gateway and auth token.
@@ -57,7 +59,7 @@ No configuration needed beyond thread IDs — clawrus auto-discovers the OpenCla
 | `--timeout <seconds>` | `300` | Per-thread timeout |
 | `--parallel <int>` | `4` | Max concurrent threads |
 | `--gateway-url <url>` | auto | Override gateway URL |
-| `--mode <string>` | `broadcast` | Run mode: `broadcast\|gather` |
+| `--mode <string>` | `broadcast` | Run mode: `broadcast\|gather\|pipeline\|poll` |
 | `--gather-timeout <seconds>` | `60` | How long to wait for replies in gather mode |
 | `--threads <ids>` | — | Ad-hoc comma-separated thread IDs (skip group) |
 
@@ -116,44 +118,102 @@ clawrus run @all "health check"
 
 If a thread appears in multiple groups within a preset, it receives the message only once.
 
-## Broadcast vs Gather
+## Run Modes
+
+| Mode | What it does |
+|------|-------------|
+| `broadcast` | Send to all threads in parallel, print pass/fail table |
+| `gather` | Send, poll for replies, LLM-summarize |
+| `pipeline` | Sequential chain — each thread's reply feeds the next |
+| `poll` | Send + collect replies into a status table, no LLM |
 
 ### Broadcast (default)
 
-Sends the message to all threads in parallel and reports delivery status.
-
 ```bash
-clawrus run my-agents "implement the new auth flow"
+clawrus run my-agents "deploy to staging"
 ```
 
 ```
 THREAD          STATUS  ERROR
-AuthAgent       OK
-PaymentAgent    OK
-SearchAgent     FAIL    timeout after 300s
+AuthAgent       ✅      -
+PaymentAgent    ✅      -
+SearchAgent     ❌      timeout after 300s
 ```
 
 ### Gather
-
-Sends the message, polls each thread for a reply, then summarizes all responses via LLM.
 
 ```bash
 clawrus run my-agents "what's your current status?" --mode gather --gather-timeout 90
 ```
 
 ```
-Clawrus -- Gather Results
+🎵 Clawrus — Gather Results
 Group: my-agents | Mode: gather | Threads: 3
 
-[AuthAgent] "OAuth integration complete, PR ready for review"
-[PaymentAgent] "Stripe webhook handler at 80%, ETA 2 hours"
-[SearchAgent] "Elasticsearch indexing running, 3/5 indices rebuilt"
+[AuthAgent] "OAuth complete, PR ready for review"
+[PaymentAgent] "Stripe webhooks at 80%, ETA 2 hours"
+[SearchAgent] "Elasticsearch indexing, 3/5 indices rebuilt"
 
-Summary: AuthAgent is done with OAuth (PR ready). PaymentAgent is 80% through
-Stripe webhooks (2h ETA). SearchAgent is rebuilding indices (3/5 complete).
+📋 Summary: AuthAgent has finished OAuth (PR ready). PaymentAgent is 80% through
+Stripe webhooks with a 2h ETA. SearchAgent is rebuilding indices (3/5 done).
 ```
 
-If the LLM summarization endpoint isn't available, raw replies are printed instead — not an error.
+### Pipeline
+
+Chain threads so each one builds on the last. Perfect for research → draft → critique flows.
+
+```bash
+clawrus run research-chain "Explain rate limiting strategies" --mode pipeline --gather-timeout 120
+```
+
+```
+[step 1/3] Researcher: sending...
+[step 1/3] Researcher replied (342 chars)
+[step 2/3] Writer: sending Researcher's reply...
+[step 2/3] Writer replied (891 chars)
+[step 3/3] Critic: sending Writer's reply...
+[step 3/3] Critic replied (234 chars)
+
+📋 Pipeline complete — 3/3 steps succeeded
+```
+
+### Poll
+
+Quick sweep — no LLM, just a table.
+
+```bash
+clawrus run @ops "health check" --mode poll --gather-timeout 30
+```
+
+```
+📡 Clawrus — Poll Results | Group: ops | Threads: 3
+
+THREAD                STATUS  REPLY
+System Health         ✅      All services nominal
+Alert & Incident      ✅      No active incidents
+Maintenance           ✅      Cleanup job queued for 02:00
+```
+
+## Template Substitution
+
+Prompts (positional or per-thread) support placeholders filled at send time:
+
+| Placeholder | Value |
+|-------------|-------|
+| `{{name}}` | Thread name |
+| `{{group}}` | Group name |
+| `{{preset}}` | Preset name (empty if none) |
+| `{{date}}` | `YYYY-MM-DD` |
+| `{{time}}` | `HH:MM` (24h) |
+
+```bash
+clawrus run @all "Morning {{date}}: {{name}}, what's your status in {{group}}?"
+
+clawrus group add sprint-7 1111 --name "AuthAgent" \
+  --prompt "Hey {{name}}, it's {{date}}. Ship the auth flow for {{group}}."
+```
+
+---
 
 ## Per-Thread Prompts
 

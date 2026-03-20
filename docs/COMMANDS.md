@@ -43,8 +43,8 @@ Usage: clawrus run [group|@preset] [message] [flags]
 ### Flags
 
 ```
---mode <string>              Run mode: broadcast (default) or gather
---gather-timeout <int>       Seconds to wait for replies in gather mode (default: 60)
+--mode <string>              Run mode: broadcast (default), gather, pipeline, or poll
+--gather-timeout <int>       Seconds to wait for replies in gather/pipeline/poll mode (default: 60)
 --threads <string>           Comma-separated thread IDs for ad-hoc runs (no group needed)
 ```
 
@@ -54,8 +54,14 @@ Usage: clawrus run [group|@preset] [message] [flags]
 # Broadcast to a group
 clawrus run backend "deploy to staging"
 
-# Gather replies with timeout
+# Gather replies with LLM summary
 clawrus run backend "status update" --mode gather --gather-timeout 120
+
+# Pipeline: each thread's reply feeds the next
+clawrus run chain "Research topic X" --mode pipeline --gather-timeout 90
+
+# Poll: quick status sweep (table output, no LLM)
+clawrus run @ops "What's your status?" --mode poll
 
 # Run a preset
 clawrus run @deploy "prepare release"
@@ -66,29 +72,64 @@ clawrus run --threads 111,222,333 "ping"
 # Override model for the run
 clawrus run backend "complex task" --model claude-opus-4-6 --thinking high
 
-# Per-thread prompts (no message argument)
+# Per-thread prompts (no message argument needed)
 clawrus run my-sprint
+
+# Template substitution in prompts
+clawrus run agents "Hi {{name}}, update {{group}} on your progress for {{date}}"
 
 # Limit concurrency
 clawrus run backend "build" --parallel 2
 ```
 
-### Behavior
+### Run Modes
 
-**Broadcast mode (default):**
-1. Sends message to each thread in parallel (bounded by `--parallel`)
-2. Prints a results table: thread name/ID, status (OK/FAIL), error if any
+**Broadcast (default):**
+Sends message to all threads in parallel. Prints a results table: thread, status (✅/❌), error if any.
 
-**Gather mode:**
-1. Sends message to each thread
-2. Polls each thread for a reply every 3 seconds until `--gather-timeout`
-3. Prints each thread's reply
-4. Attempts LLM summarization via `/api/ai/complete` (gracefully skipped if unavailable)
+**Gather:**
+Sends message to all threads in parallel, then polls each for a reply (up to `--gather-timeout`).
+Prints each reply, then runs an LLM summary via the OpenClaw gateway `/v1/chat/completions` endpoint.
 
-**Per-thread prompts:** If a thread has a `prompt` field, that prompt is sent instead of the positional `[message]` argument. If all threads have prompts, the message argument can be omitted entirely.
+**Pipeline:**
+Runs threads sequentially. Sends the initial message to thread[0], waits for its reply, then passes that reply as the input to thread[1], and so on.
+Use for multi-stage reasoning or refinement chains (e.g. research → draft → critique).
+If a step times out, the previous reply (or initial message) is passed to the next thread.
 
-**Priority resolution for model/thinking/timeout:**
-`CLI flag > per-thread override > group default > hardcoded default`
+**Poll:**
+Sends message to all threads in parallel (same as broadcast), then collects replies.
+Outputs a compact status table: THREAD | STATUS | REPLY (truncated to 80 chars).
+No LLM summarization — fast lightweight fleet check.
+
+### Template Substitution
+
+Any message or per-thread prompt can use these placeholders:
+
+| Placeholder | Replaced with |
+|-------------|---------------|
+| `{{name}}` | Thread name |
+| `{{group}}` | Group name |
+| `{{preset}}` | Preset name (empty if none) |
+| `{{date}}` | Current date `YYYY-MM-DD` |
+| `{{time}}` | Current time `HH:MM` (24h) |
+
+Example:
+```bash
+clawrus group add sprint-1 123456 --name "BuildBot" \
+  --prompt "Hey {{name}}, please summarize today ({{date}}) progress for group {{group}}"
+```
+
+### Priority Resolution
+
+For model, thinking, and timeout:
+```
+CLI flag > per-thread override > group default > hardcoded default
+```
+
+For message:
+```
+Per-thread prompt > positional [message] argument
+```
 
 ---
 
@@ -151,7 +192,8 @@ Usage: clawrus group add <group> <thread-id> [flags]
 --name <string>       Human-readable label for the thread
 --model <string>      Per-thread model override
 --thinking <string>   Per-thread thinking mode: off|low|medium|high
---prompt <string>     Per-thread prompt (used instead of run message)
+--prompt <string>     Per-thread prompt (used instead of run message; supports {{placeholders}})
+--context <string>    Additional context prepended to the prompt
 ```
 
 ### Examples
@@ -159,7 +201,8 @@ Usage: clawrus group add <group> <thread-id> [flags]
 ```bash
 clawrus group add backend 1484056775278989333 --name "AuthAgent"
 clawrus group add backend 1484056779322036234 --name "PayAgent" --model claude-opus-4-6
-clawrus group add sprint-1 1484056767544688690 --name "SearchAgent" --prompt "Migrate to Meilisearch"
+clawrus group add sprint-1 1484056767544688690 --name "SearchAgent" \
+  --prompt "Hey {{name}}, migrate to Meilisearch. Report back by {{date}}."
 ```
 
 ---

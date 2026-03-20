@@ -104,24 +104,101 @@ clawrus run my-fleet "refactor the data layer to use repository pattern" \
 
 ---
 
-## Gather Mode Deep Dive
+## Run Modes
 
-Gather mode has three phases:
+Clawrus has four run modes — pick based on what you need back.
 
-1. **Send** — broadcasts the message to all threads (same as broadcast mode)
-2. **Poll** — checks each thread every 3 seconds for a reply, up to `--gather-timeout`
-3. **Summarize** — sends all collected replies to OpenClaw's `/api/ai/complete` for LLM summarization
+### Broadcast (default)
 
-### When to Use Gather
+Fire-and-forget. Sends to all threads in parallel, prints a pass/fail table. Use for issuing commands, not reading responses.
 
-- Status checks across the fleet
-- Asking agents for estimates or blockers
-- Collecting test results
-- Any time you need to read agent responses, not just fire-and-forget
+```bash
+clawrus run backend "deploy to staging"
+```
 
-### Graceful Degradation
+### Gather
 
-If the LLM summarization endpoint (`/api/ai/complete`) isn't available, gather mode still works — it just prints the raw replies without a summary. This is not an error.
+Sends, waits for replies, then LLM-summarizes. Best for status checks and questions.
+
+Three phases:
+1. **Send** — broadcasts to all threads in parallel
+2. **Poll** — checks each thread every 3s until `--gather-timeout`
+3. **Summarize** — sends collected replies to `/v1/chat/completions` for an LLM summary
+
+```bash
+clawrus run backend "status update" --mode gather --gather-timeout 120
+```
+
+### Pipeline
+
+Sequential chain: each thread's reply becomes the next thread's input. Use for multi-stage reasoning — research → draft → critique, or plan → implement → review.
+
+```bash
+# Create a 3-step chain
+clawrus group new chain
+clawrus group add chain 1111 --name "Researcher"
+clawrus group add chain 2222 --name "Writer"
+clawrus group add chain 3333 --name "Critic"
+
+# Run: Researcher gets the prompt, Writer gets Researcher's reply, Critic gets Writer's reply
+clawrus run chain "Write a technical doc on rate limiting" --mode pipeline --gather-timeout 120
+```
+
+If a step times out, the previous output is passed forward so the chain doesn't break.
+
+### Poll
+
+Quick fleet health sweep. Broadcasts then collects replies into a compact table — no LLM, just raw status.
+
+```bash
+clawrus run @ops "quick status?" --mode poll --gather-timeout 30
+```
+
+Output:
+```
+📡 Clawrus — Poll Results | Group: ops | Threads: 3
+
+THREAD                STATUS  REPLY
+System Health         ✅      All services nominal, last check 2m ago
+Alert & Incident      ✅      No active incidents
+Maintenance           ✅      Cleanup job queued for 02:00
+```
+
+### When to use what
+
+| Mode | Use when |
+|------|----------|
+| broadcast | Issuing commands, fire-and-forget |
+| gather | Questions, status checks, need a summary |
+| pipeline | Multi-stage reasoning chains |
+| poll | Fast fleet health check, no summarization needed |
+
+---
+
+## Template Substitution
+
+Any message or per-thread prompt can use placeholders that are filled in at send time:
+
+| Placeholder | Value |
+|-------------|-------|
+| `{{name}}` | Thread name |
+| `{{group}}` | Group name |
+| `{{preset}}` | Preset name (empty if none) |
+| `{{date}}` | Current date `YYYY-MM-DD` |
+| `{{time}}` | Current time `HH:MM` (24h) |
+
+### Personalised prompts
+
+```bash
+clawrus group add sprint-7 1111 --name "AuthAgent" \
+  --prompt "Hey {{name}}, it's {{date}}. Report progress on your task for group {{group}}."
+```
+
+### Dynamic broadcast
+
+```bash
+clawrus run @all "Morning standup {{date}}: what did {{name}} ship yesterday?"
+```
 
 ---
 
