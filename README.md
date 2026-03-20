@@ -1,6 +1,11 @@
-# ~~Chorus~~ Clawrus 🎵
+# Clawrus
 
 Agent thread orchestration for OpenClaw
+
+## Setup
+
+Requires OpenClaw running locally (`openclaw gateway status`).
+No configuration needed — clawrus auto-discovers the gateway.
 
 ## Install
 
@@ -36,7 +41,7 @@ clawrus run product-ideas "ship it" --model claude-opus-4-6
 clawrus show product-ideas
 
 # Add a thread to a group
-clawrus add product-ideas 1484056775278989333 --name "AgentPulse"
+clawrus group add product-ideas 1484056775278989333 --name "AgentPulse"
 
 # Add a thread with a per-thread prompt
 clawrus group add my-sprint 1484056775 --name AgentPulse --prompt "Add Supabase auth — email + GitHub OAuth"
@@ -51,7 +56,7 @@ clawrus run my-sprint
 clawrus group set-prompt my-sprint AgentPulse "Implement SSO with SAML"
 
 # Remove a thread
-clawrus remove product-ideas 1484056775278989333
+clawrus group remove product-ideas 1484056775278989333
 ```
 
 ## Modes
@@ -66,7 +71,7 @@ clawrus run my-group "do the thing"
 
 ### gather
 
-Sends the command, then polls each thread for a reply. Collects all replies and summarizes them via an LLM (OpenRouter or OpenAI).
+Sends the command, then polls each thread for a reply. Collects all replies and summarizes them via OpenClaw's built-in LLM routing (`/api/ai/complete`).
 
 ```bash
 clawrus run my-group "what's your status?" --mode gather
@@ -84,11 +89,21 @@ Group: my-group | Mode: gather | Threads: 4
 📋 Summary: AgentPulse is done and ready for review. SkillVault is still processing (batch 3/5).
 ```
 
-Set `OPENROUTER_API_KEY` or `OPENAI_API_KEY` for LLM summarization. Without a key, raw replies are printed.
+If `/api/ai/complete` is not available, raw replies are printed instead (not an error).
+
+## Gateway Discovery
+
+Clawrus auto-discovers the OpenClaw gateway in this order:
+
+1. `--gateway-url` CLI flag
+2. `~/.clawrus/config.yaml` → `gateway.url` field
+3. Auto-detect `http://127.0.0.1:18789` (OpenClaw default)
+4. Scan common ports (3000, 8080, 3260)
+5. Error with helpful message if nothing found
 
 ## Config
 
-`~/.clawrus/groups.yaml` (or `CLAWRUS_CONFIG` env):
+`~/.clawrus/groups.yaml`:
 
 ```yaml
 groups:
@@ -109,16 +124,12 @@ groups:
         name: "FleetControl"
 ```
 
-## Environment
+Optional `~/.clawrus/config.yaml` (only needed to override gateway URL):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENCLAW_URL` | `http://localhost:3260` | OpenClaw gateway URL |
-| `OPENCLAW_API_KEY` | | Gateway API key |
-| `OPENCLAW_AGENT_ID` | | Target agent ID |
-| `CLAWRUS_CONFIG` | `~/.clawrus/groups.yaml` | Config file path |
-| `OPENROUTER_API_KEY` | | OpenRouter API key (for gather summaries) |
-| `OPENAI_API_KEY` | | OpenAI API key (fallback for gather summaries) |
+```yaml
+gateway:
+  url: http://127.0.0.1:18789
+```
 
 ## Priority (model/thinking/timeout)
 

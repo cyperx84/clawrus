@@ -5,6 +5,16 @@ type GroupConfig struct {
 	Groups map[string]Group `yaml:"groups" json:"groups"`
 }
 
+// ClawrusConfig is the main config (~/.clawrus/config.yaml)
+type ClawrusConfig struct {
+	Gateway GatewayConfig `yaml:"gateway" json:"gateway"`
+}
+
+// GatewayConfig holds gateway connection settings
+type GatewayConfig struct {
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+}
+
 // Group defines a named collection of threads with shared defaults
 type Group struct {
 	Model    string   `yaml:"model,omitempty" json:"model,omitempty"`

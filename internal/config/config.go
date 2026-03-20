@@ -8,12 +8,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func ConfigDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".clawrus")
+}
+
 func ConfigPath() string {
 	if p := os.Getenv("CLAWRUS_CONFIG"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".clawrus", "groups.yaml")
+	return filepath.Join(ConfigDir(), "groups.yaml")
+}
+
+// MainConfigPath returns the path to ~/.clawrus/config.yaml
+func MainConfigPath() string {
+	return filepath.Join(ConfigDir(), "config.yaml")
+}
+
+// LoadMainConfig loads ~/.clawrus/config.yaml (gateway settings etc.)
+func LoadMainConfig() (*types.ClawrusConfig, error) {
+	p := MainConfigPath()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &types.ClawrusConfig{}, nil
+		}
+		return nil, err
+	}
+	var cfg types.ClawrusConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 func Load() (*types.GroupConfig, error) {

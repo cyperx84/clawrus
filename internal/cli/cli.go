@@ -15,10 +15,11 @@ import (
 )
 
 var (
-	flagModel    string
-	flagThinking string
-	flagTimeout  int
-	flagParallel int
+	flagModel      string
+	flagThinking   string
+	flagTimeout    int
+	flagParallel   int
+	flagGatewayURL string
 )
 
 func RootCmd() *cobra.Command {
@@ -31,6 +32,7 @@ func RootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&flagThinking, "thinking", "", "Override thinking mode (off|low|medium|high)")
 	root.PersistentFlags().IntVar(&flagTimeout, "timeout", 300, "Per-thread timeout in seconds")
 	root.PersistentFlags().IntVar(&flagParallel, "parallel", 4, "Max concurrent threads")
+	root.PersistentFlags().StringVar(&flagGatewayURL, "gateway-url", "", "OpenClaw gateway URL (auto-discovered if not set)")
 
 	root.AddCommand(groupCmd())
 	root.AddCommand(runCmd())
@@ -77,13 +79,19 @@ func resolveTimeout(groupTimeout, threadTimeout, flagTimeout int) time.Duration 
 }
 
 func getGateway() *gateway.Client {
-	baseURL := os.Getenv("OPENCLAW_URL")
-	apiKey := os.Getenv("OPENCLAW_API_KEY")
-	agentID := os.Getenv("OPENCLAW_AGENT_ID")
-	if baseURL == "" {
-		baseURL = "http://localhost:3260"
+	mainCfg, _ := config.LoadMainConfig()
+	configURL := ""
+	if mainCfg != nil {
+		configURL = mainCfg.Gateway.URL
 	}
-	return gateway.NewClient(baseURL, apiKey, agentID)
+
+	baseURL, err := gateway.DiscoverGateway(flagGatewayURL, configURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+
+	return gateway.NewClient(baseURL, "", "")
 }
 
 // groupCmd is the parent command for all group management subcommands
@@ -523,6 +531,8 @@ func initCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("Created %s\n", config.ConfigPath())
+			fmt.Println("\nNo configuration needed — clawrus auto-discovers the local OpenClaw gateway.")
+			fmt.Println("Just edit the thread IDs above and run: clawrus run example \"hello\"")
 			return nil
 		},
 	}
@@ -712,14 +722,14 @@ func runGather(gw *gateway.Client, g types.Group, groupName string, results []ty
 		}
 	}
 
-	// Summarize
+	// Summarize via OpenClaw gateway
 	fmt.Println()
-	summary, err := gateway.SummarizeReplies(repliesText.String())
+	summary, err := gateway.SummarizeReplies(gw.BaseURL, repliesText.String())
 	if err != nil {
 		fmt.Printf("📋 Summary: (LLM error: %s)\n", err)
 	} else if summary == "" {
-		// No API key — print raw
-		fmt.Printf("📋 Summary: %s\n", repliesText.String())
+		// /api/ai/complete not available — print raw replies
+		fmt.Printf("📋 Raw replies:\n%s", repliesText.String())
 	} else {
 		fmt.Printf("📋 Summary: %s\n", summary)
 	}

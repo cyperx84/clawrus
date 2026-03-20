@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -25,6 +24,55 @@ func NewClient(baseURL, apiKey, agentID string) *Client {
 		AgentID: agentID,
 		Timeout: 30 * time.Second,
 	}
+}
+
+// DiscoverGateway tries to find a running OpenClaw gateway.
+// Priority: flagURL > configURL > default port > common ports scan.
+func DiscoverGateway(flagURL, configURL string) (string, error) {
+	// 1. CLI flag
+	if flagURL != "" {
+		return flagURL, nil
+	}
+
+	// 2. Config file
+	if configURL != "" {
+		return configURL, nil
+	}
+
+	// 3. Auto-detect: OpenClaw default port
+	defaultURL := "http://127.0.0.1:18789"
+	if pingGateway(defaultURL) {
+		return defaultURL, nil
+	}
+
+	// 4. Fallback: try common ports
+	commonPorts := []int{3000, 8080, 3260}
+	for _, port := range commonPorts {
+		candidate := fmt.Sprintf("http://127.0.0.1:%d", port)
+		if pingGateway(candidate) {
+			return candidate, nil
+		}
+	}
+
+	// 5. Nothing found
+	return "", fmt.Errorf("OpenClaw gateway not found. Is it running? (openclaw gateway status)")
+}
+
+// pingGateway checks if a gateway is responding at the given URL.
+func pingGateway(baseURL string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	for _, path := range []string{"/api/ping", "/api/status"} {
+		resp, err := client.Get(baseURL + path)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+			return true
+		}
+	}
+	return false
 }
 
 // SendMessage sends a message to a thread via sessions_send
@@ -160,31 +208,12 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 	return "", nil
 }
 
-// SummarizeReplies calls an LLM API to aggregate replies.
-// Checks OPENROUTER_API_KEY first, then OPENAI_API_KEY. Returns empty string if no key.
-func SummarizeReplies(replies string) (string, error) {
-	apiKey := os.Getenv("OPENROUTER_API_KEY")
-	apiURL := "https://openrouter.ai/api/v1/chat/completions"
-	model := "openrouter/auto"
-
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-		apiURL = "https://api.openai.com/v1/chat/completions"
-		model = "gpt-4o-mini"
-	}
-
-	if apiKey == "" {
-		return "", nil
-	}
-
+// SummarizeReplies sends replies to OpenClaw gateway's /api/ai/complete for LLM summarization.
+// Returns empty string if the endpoint is not available (404).
+func SummarizeReplies(gatewayURL, replies string) (string, error) {
 	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{
-				"role":    "user",
-				"content": "Summarize these agent replies into a concise unified status:\n" + replies,
-			},
-		},
+		"prompt": "Summarize these agent replies into a concise unified status:\n" + replies,
+		"model":  "glm-5-turbo",
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -192,38 +221,49 @@ func SummarizeReplies(replies string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(data))
+	url := gatewayURL + "/api/ai/complete"
+	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil // gateway unreachable, degrade gracefully
 	}
 	defer resp.Body.Close()
+
+	// 404 means /api/ai/complete not available — not an error, just skip summarization
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
 
 	body, _ := io.ReadAll(resp.Body)
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("LLM API returned non-JSON: %s", string(body))
+		return "", nil // non-JSON response, degrade gracefully
 	}
 
-	choices, ok := result["choices"].([]interface{})
-	if !ok || len(choices) == 0 {
-		return "", fmt.Errorf("unexpected LLM response: %s", string(body))
+	// Extract content from response
+	if content, ok := result["content"].(string); ok {
+		return content, nil
 	}
-	choice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("unexpected choice format")
+	if content, ok := result["text"].(string); ok {
+		return content, nil
 	}
-	msg, ok := choice["message"].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("unexpected message format")
+
+	// Try OpenAI-compatible format
+	if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if msg, ok := choice["message"].(map[string]interface{}); ok {
+				if content, ok := msg["content"].(string); ok {
+					return content, nil
+				}
+			}
+		}
 	}
-	content, _ := msg["content"].(string)
-	return content, nil
+
+	return "", nil
 }
