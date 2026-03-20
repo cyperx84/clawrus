@@ -7,8 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -228,11 +229,41 @@ func (c *Client) GetStatus(threadID string) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// toolInvokeResponse matches the /tools/invoke response envelope for message reads.
+type toolInvokeResponse struct {
+	OK     bool `json:"ok"`
+	Result struct {
+		Content json.RawMessage `json:"content"`
+		Details struct {
+			OK       bool               `json:"ok"`
+			Messages []toolInvokeMessage `json:"messages"`
+		} `json:"details"`
+	} `json:"result"`
+}
+
+type toolInvokeMessage struct {
+	ID      string `json:"id"`
+	Content string `json:"content"`
+	Author  struct {
+		Bot bool `json:"bot"`
+	} `json:"author"`
+	TimestampMs int64 `json:"timestampMs"`
+}
+
 // PollReply polls for new messages in a thread after a given message ID.
-// Returns the first reply content found, or empty string on timeout.
+// Returns the first non-bot reply content found, or empty string on timeout.
 func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.Duration) (string, error) {
 	deadline := time.Now().Add(gatherTimeout)
 	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	var afterID uint64
+	if afterMessageID != "" {
+		var err error
+		afterID, err = strconv.ParseUint(afterMessageID, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid afterMessageID %q: %w", afterMessageID, err)
+		}
+	}
 
 	for time.Now().Before(deadline) {
 		reqBody := ToolInvokeRequest{
@@ -241,8 +272,7 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 				"action":  "read",
 				"channel": "discord",
 				"target":  threadID,
-				"limit":   5,
-				"after":   afterMessageID,
+				"limit":   10,
 			},
 		}
 
@@ -275,15 +305,25 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 			continue
 		}
 
-		var messages []map[string]interface{}
-		if err := json.Unmarshal(body, &messages); err != nil {
+		var envelope toolInvokeResponse
+		if err := json.Unmarshal(body, &envelope); err != nil {
 			time.Sleep(3 * time.Second)
 			continue
 		}
 
-		if len(messages) > 0 {
-			if content, ok := messages[0]["content"].(string); ok && content != "" {
-				return content, nil
+		// Messages are returned newest-first; find the first non-bot message after afterID.
+		for _, msg := range envelope.Result.Details.Messages {
+			if msg.Author.Bot {
+				continue
+			}
+			if afterID > 0 && msg.ID != "" {
+				msgID, err := strconv.ParseUint(msg.ID, 10, 64)
+				if err != nil || msgID <= afterID {
+					continue
+				}
+			}
+			if msg.Content != "" {
+				return msg.Content, nil
 			}
 		}
 
