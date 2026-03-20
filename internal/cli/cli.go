@@ -136,7 +136,7 @@ func presetNewCmd() *cobra.Command {
 		Short: "Create a preset from one or more groups",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			presetName := args[0]
+			presetName := strings.TrimPrefix(args[0], "@")
 			groupNames := args[1:]
 
 			// Validate that all referenced groups exist
@@ -178,7 +178,7 @@ func presetDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			name := args[0]
+			name := strings.TrimPrefix(args[0], "@")
 			if _, exists := cfg.Presets[name]; !exists {
 				return fmt.Errorf("preset %q not found", name)
 			}
@@ -229,7 +229,7 @@ func presetShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			name := args[0]
+			name := strings.TrimPrefix(args[0], "@")
 			p, ok := presetCfg.Presets[name]
 			if !ok {
 				return fmt.Errorf("preset %q not found", name)
