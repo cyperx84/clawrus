@@ -70,15 +70,15 @@ func resolveThinking(groupThinking, threadThinking, flagThinking string) string 
 	return groupThinking
 }
 
-func resolveTimeout(groupTimeout, threadTimeout, flagTimeout int) time.Duration {
+func resolveTimeout(groupTimeout, threadTimeout *int, flagTimeout int) time.Duration {
 	if flagTimeout != 0 {
 		return time.Duration(flagTimeout) * time.Second
 	}
-	if threadTimeout != 0 {
-		return time.Duration(threadTimeout) * time.Second
+	if threadTimeout != nil {
+		return time.Duration(*threadTimeout) * time.Second
 	}
-	if groupTimeout != 0 {
-		return time.Duration(groupTimeout) * time.Second
+	if groupTimeout != nil {
+		return time.Duration(*groupTimeout) * time.Second
 	}
 	return 300 * time.Second
 }
@@ -207,16 +207,24 @@ func presetListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(cfg.Presets) == 0 {
-				fmt.Println("No presets configured. Use `clawrus preset new <name> <group1> [group2...]` to create one.")
-				return nil
-			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 			fmt.Fprintln(w, "PRESET\tGROUPS")
+			// Always show @all as a dynamic preset
+			groupCfg, _ := config.Load()
+			allGroups := make([]string, 0, len(groupCfg.Groups))
+			for name := range groupCfg.Groups {
+				allGroups = append(allGroups, name)
+			}
+			if len(allGroups) > 0 {
+				fmt.Fprintf(w, "@all\t(dynamic) %s\n", strings.Join(allGroups, ", "))
+			}
 			for name, p := range cfg.Presets {
 				fmt.Fprintf(w, "@%s\t%s\n", name, strings.Join(p.Groups, ", "))
 			}
 			w.Flush()
+			if len(cfg.Presets) == 0 && len(allGroups) == 0 {
+				fmt.Println("No presets configured. Use `clawrus preset new <name> <group1> [group2...]` to create one.")
+			}
 			return nil
 		},
 	}
@@ -281,7 +289,10 @@ func resolvePreset(presetName string, groupCfg *types.GroupConfig) (types.Group,
 		return types.Group{}, "", err
 	}
 
-	// Auto-create @all preset if no presets.yaml exists and preset is "all"
+	// @all is always dynamic: it is auto-generated at resolve time by iterating
+	// all current groups. It is never persisted to presets.yaml. This means @all
+	// always reflects the current set of groups, even if groups are added/removed
+	// after the preset list was last saved.
 	p, ok := presetCfg.Presets[presetName]
 	if !ok && presetName == "all" {
 		// Auto-generate @all from all known groups
@@ -482,14 +493,23 @@ func groupCloneCmd() *cobra.Command {
 			if _, exists := cfg.Groups[dst]; exists {
 				return fmt.Errorf("destination group %q already exists", dst)
 			}
-			// Deep copy threads
+			// Deep copy threads and pointer fields
 			cloned := types.Group{
 				Model:    g.Model,
 				Thinking: g.Thinking,
-				Timeout:  g.Timeout,
 				Threads:  make([]types.Thread, len(g.Threads)),
 			}
+			if g.Timeout != nil {
+				v := *g.Timeout
+				cloned.Timeout = &v
+			}
 			copy(cloned.Threads, g.Threads)
+			for i, t := range cloned.Threads {
+				if t.Timeout != nil {
+					v := *t.Timeout
+					cloned.Threads[i].Timeout = &v
+				}
+			}
 			cfg.Groups[dst] = cloned
 			if err := config.Save(cfg); err != nil {
 				return err
@@ -531,7 +551,8 @@ func groupSetCmd() *cobra.Command {
 				changed = true
 			}
 			if cmd.Flags().Changed("timeout") {
-				g.Timeout = setTimeout
+				v := setTimeout
+				g.Timeout = &v
 				changed = true
 			}
 			if !changed {
@@ -647,7 +668,7 @@ func listRunE(cmd *cobra.Command, args []string) error {
 		}
 		thinking := g.Thinking
 		if flagThinking != "" {
-			thinking = flagThinking + " (override)"
+			thinking = flagThinking
 		}
 		if thinking == "" {
 			thinking = "-"
@@ -655,9 +676,9 @@ func listRunE(cmd *cobra.Command, args []string) error {
 		if model == "" {
 			model = "(default)"
 		}
-		timeout := fmt.Sprintf("%ds", g.Timeout)
-		if g.Timeout == 0 {
-			timeout = "300s"
+		timeout := "300s"
+		if g.Timeout != nil {
+			timeout = fmt.Sprintf("%ds", *g.Timeout)
 		}
 		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", name, len(g.Threads), model, thinking, timeout)
 	}
@@ -682,8 +703,8 @@ func showRunE(cmd *cobra.Command, args []string) error {
 	if g.Thinking != "" {
 		fmt.Printf("  Thinking: %s\n", g.Thinking)
 	}
-	if g.Timeout != 0 {
-		fmt.Printf("  Timeout:  %ds\n", g.Timeout)
+	if g.Timeout != nil {
+		fmt.Printf("  Timeout:  %ds\n", *g.Timeout)
 	}
 	fmt.Printf("  Threads:  %d\n\n", len(g.Threads))
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
@@ -719,11 +740,12 @@ func initCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Create sample groups.yaml config",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			defaultTimeout := 300
 			cfg := &types.GroupConfig{
 				Groups: map[string]types.Group{
 					"example": {
 						Model:   "glm-5-turbo",
-						Timeout: 300,
+						Timeout: &defaultTimeout,
 						Threads: []types.Thread{
 							{ID: "CHANNEL_ID_HERE", Name: "Thread 1"},
 							{ID: "CHANNEL_ID_HERE", Name: "Thread 2"},
@@ -827,6 +849,12 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 
 			command := strings.Join(args, " ")
 
+			// Resolve preset display name for context header
+			presetDisplay := ""
+			if strings.HasPrefix(groupName, "@") {
+				presetDisplay = groupName
+			}
+
 			gw := getGateway()
 			results := make([]types.RunResult, len(threads))
 			var wg sync.WaitGroup
@@ -854,12 +882,6 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 						msg = thread.Prompt
 					}
 
-					// Resolve preset display name for context header
-					presetDisplay := ""
-					if strings.HasPrefix(groupName, "@") {
-						presetDisplay = groupName
-					}
-
 					fmt.Printf("→ %s: %q\n", name, msg)
 
 					resp, err := gw.SendMessage(thread.ID, msg, model, thinking, groupName, presetDisplay, timeout)
@@ -867,13 +889,13 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 						results[idx] = types.RunResult{ThreadID: thread.ID, ThreadName: name, OK: false, Error: err.Error()}
 						return
 					}
-					results[idx] = types.RunResult{ThreadID: thread.ID, ThreadName: name, OK: resp.OK, Error: resp.Error}
+					results[idx] = types.RunResult{ThreadID: thread.ID, ThreadName: name, OK: resp.OK, Error: resp.Error, SentMessageID: resp.MessageID}
 				}(i, t)
 			}
 			wg.Wait()
 
 			if flagMode == "gather" {
-				return runGather(gw, g, groupName, results, time.Duration(flagGatherTimeout)*time.Second)
+				return runGather(gw, g, groupName, presetDisplay, results, time.Duration(flagGatherTimeout)*time.Second)
 			}
 
 			// Broadcast mode: print results table
@@ -907,17 +929,17 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 }
 
 // runGather polls for replies from each thread and optionally summarizes them via LLM.
-func runGather(gw *gateway.Client, g types.Group, groupName string, results []types.RunResult, gatherTimeout time.Duration) error {
-	// Poll for replies in parallel
+func runGather(gw *gateway.Client, g types.Group, groupName, presetName string, results []types.RunResult, gatherTimeout time.Duration) error {
+	// Poll for replies in parallel, using the sent message ID as the anchor
 	var wg sync.WaitGroup
 	for i, r := range results {
 		if !r.OK {
 			continue
 		}
 		wg.Add(1)
-		go func(idx int, threadID string) {
+		go func(idx int, threadID, afterID string) {
 			defer wg.Done()
-			reply, err := gw.PollReply(threadID, "", gatherTimeout)
+			reply, err := gw.PollReply(threadID, afterID, gatherTimeout)
 			if err != nil {
 				results[idx].Reply = fmt.Sprintf("(poll error: %s)", err)
 			} else if reply == "" {
@@ -925,13 +947,18 @@ func runGather(gw *gateway.Client, g types.Group, groupName string, results []ty
 			} else {
 				results[idx].Reply = reply
 			}
-		}(i, r.ThreadID)
+		}(i, r.ThreadID, r.SentMessageID)
 	}
 	wg.Wait()
 
 	// Build output
 	fmt.Printf("\n🎵 Clawrus — Gather Results\n")
-	fmt.Printf("Group: %s | Mode: gather | Threads: %d\n\n", groupName, len(g.Threads))
+	headerParts := []string{fmt.Sprintf("Group: %s", groupName)}
+	if presetName != "" {
+		headerParts = append(headerParts, fmt.Sprintf("Preset: %s", presetName))
+	}
+	headerParts = append(headerParts, fmt.Sprintf("Mode: gather | Threads: %d", len(g.Threads)))
+	fmt.Printf("%s\n\n", strings.Join(headerParts, " | "))
 
 	var repliesText strings.Builder
 	for _, r := range results {

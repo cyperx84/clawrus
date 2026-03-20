@@ -116,10 +116,12 @@ type ToolInvokeRequest struct {
 }
 
 type SendResponse struct {
-	OK      bool   `json:"ok"`
-	Status  string `json:"status,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Message string `json:"message,omitempty"`
+	OK        bool   `json:"ok"`
+	Status    string `json:"status,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Message   string `json:"message,omitempty"`
+	MessageID string `json:"messageId,omitempty"`
+	ID        string `json:"id,omitempty"`
 }
 
 func (c *Client) SendMessage(threadID, message, model, thinking, groupName, presetName string, timeout time.Duration) (*SendResponse, error) {
@@ -137,11 +139,6 @@ func (c *Client) SendMessage(threadID, message, model, thinking, groupName, pres
 			parts = append(parts, "model: "+model)
 		}
 		header = "**[clawrus]** " + strings.Join(parts, " · ") + "\n"
-	}
-
-	// Prepend model directive for session agent routing
-	if model != "" {
-		message = "[model:" + model + "] " + message
 	}
 
 	message = header + message
@@ -191,6 +188,10 @@ func (c *Client) SendMessage(threadID, message, model, thinking, groupName, pres
 	}
 	if result.Error != "" {
 		return nil, fmt.Errorf("gateway: %s", result.Error)
+	}
+	// Normalize message ID: prefer "messageId", fall back to "id"
+	if result.MessageID == "" && result.ID != "" {
+		result.MessageID = result.ID
 	}
 	return &result, nil
 }

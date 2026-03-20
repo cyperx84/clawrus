@@ -19,7 +19,7 @@ type GatewayConfig struct {
 type Group struct {
 	Model    string   `yaml:"model,omitempty" json:"model,omitempty"`
 	Thinking string   `yaml:"thinking,omitempty" json:"thinking,omitempty"`
-	Timeout  int      `yaml:"timeout,omitempty" json:"timeout,omitempty"` // seconds
+	Timeout  *int     `yaml:"timeout,omitempty" json:"timeout,omitempty"` // seconds; nil = not set, non-nil = explicit
 	Threads  []Thread `yaml:"threads" json:"threads"`
 }
 
@@ -29,7 +29,7 @@ type Thread struct {
 	Name     string `yaml:"name,omitempty" json:"name,omitempty"`
 	Model    string `yaml:"model,omitempty" json:"model,omitempty"`       // per-thread override
 	Thinking string `yaml:"thinking,omitempty" json:"thinking,omitempty"` // per-thread override
-	Timeout  int    `yaml:"timeout,omitempty" json:"timeout,omitempty"`   // per-thread override
+	Timeout  *int   `yaml:"timeout,omitempty" json:"timeout,omitempty"`   // per-thread override; nil = not set
 	Prompt   string `yaml:"prompt,omitempty" json:"prompt,omitempty"`     // per-thread prompt
 }
 
@@ -45,9 +45,10 @@ type Preset struct {
 
 // RunResult captures the outcome of sending to a single thread
 type RunResult struct {
-	ThreadID   string `json:"thread_id"`
-	ThreadName string `json:"thread_name,omitempty"`
-	OK         bool   `json:"ok"`
-	Error      string `json:"error,omitempty"`
-	Reply      string `json:"reply,omitempty"`
+	ThreadID      string `json:"thread_id"`
+	ThreadName    string `json:"thread_name,omitempty"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	Reply         string `json:"reply,omitempty"`
+	SentMessageID string `json:"sent_message_id,omitempty"`
 }
