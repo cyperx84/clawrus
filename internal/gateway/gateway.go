@@ -311,10 +311,17 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 			continue
 		}
 
-		// Messages are returned newest-first; find the first message after afterID.
-		for _, msg := range envelope.Result.Details.Messages {
+		// Messages are returned newest-first; reverse so we iterate oldest→newest
+		// and return the first (oldest) reply after the sent message.
+		msgs := envelope.Result.Details.Messages
+		for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+			msgs[i], msgs[j] = msgs[j], msgs[i]
+		}
+
+		for _, msg := range msgs {
 			if afterID > 0 && msg.ID != "" {
 				msgID, err := strconv.ParseUint(msg.ID, 10, 64)
+				fmt.Fprintf(os.Stderr, "[PollReply] candidate msgID=%s parsed=%d afterID=%d\n", msg.ID, msgID, afterID)
 				if err != nil || msgID <= afterID {
 					continue
 				}
