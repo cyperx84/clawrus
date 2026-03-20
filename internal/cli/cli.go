@@ -50,6 +50,19 @@ func RootCmd() *cobra.Command {
 	return root
 }
 
+// applyTemplate replaces template placeholders in a message string.
+func applyTemplate(msg, name, group, preset string) string {
+	now := time.Now()
+	r := strings.NewReplacer(
+		"{{name}}", name,
+		"{{group}}", group,
+		"{{date}}", now.Format("2006-01-02"),
+		"{{time}}", now.Format("15:04"),
+		"{{preset}}", preset,
+	)
+	return r.Replace(msg)
+}
+
 func resolveModel(groupModel, threadModel, flagModel string) string {
 	if flagModel != "" {
 		return flagModel
@@ -856,6 +869,12 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 			}
 
 			gw := getGateway()
+
+			// Pipeline mode runs sequentially — skip the parallel broadcast
+			if flagMode == "pipeline" {
+				return runPipeline(gw, g, groupName, presetDisplay, command, time.Duration(flagGatherTimeout)*time.Second)
+			}
+
 			results := make([]types.RunResult, len(threads))
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, flagParallel)
@@ -882,6 +901,9 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 						msg = thread.Prompt
 					}
 
+					// Apply template substitution
+					msg = applyTemplate(msg, name, groupName, presetDisplay)
+
 					fmt.Printf("→ %s: %q\n", name, msg)
 
 					resp, err := gw.SendMessage(thread.ID, msg, model, thinking, groupName, presetDisplay, timeout)
@@ -893,6 +915,14 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 				}(i, t)
 			}
 			wg.Wait()
+
+			if flagMode == "pipeline" {
+				return runPipeline(gw, g, groupName, presetDisplay, command, time.Duration(flagGatherTimeout)*time.Second)
+			}
+
+			if flagMode == "poll" {
+				return runPoll(gw, g, groupName, presetDisplay, results, time.Duration(flagGatherTimeout)*time.Second)
+			}
 
 			if flagMode == "gather" {
 				return runGather(gw, g, groupName, presetDisplay, results, time.Duration(flagGatherTimeout)*time.Second)
@@ -922,7 +952,7 @@ Ad-hoc runs are ephemeral — nothing is saved to config.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flagMode, "mode", "broadcast", "Run mode: broadcast or gather")
+	cmd.Flags().StringVar(&flagMode, "mode", "broadcast", "Run mode: broadcast (default), gather, pipeline, or poll")
 	cmd.Flags().IntVar(&flagGatherTimeout, "gather-timeout", 60, "Gather mode timeout in seconds")
 	cmd.Flags().StringVar(&flagThreads, "threads", "", "Comma-separated thread IDs for ad-hoc run (no group needed)")
 	return cmd
@@ -983,6 +1013,105 @@ func runGather(gw *gateway.Client, g types.Group, groupName, presetName string, 
 	} else {
 		fmt.Printf("📋 Summary: %s\n", summary)
 	}
+
+	return nil
+}
+
+// runPipeline sends a message to threads sequentially, passing each reply as input to the next thread.
+func runPipeline(gw *gateway.Client, g types.Group, groupName, presetName, initialMsg string, gatherTimeout time.Duration) error {
+	threads := g.Threads
+	total := len(threads)
+	msg := initialMsg
+
+	fmt.Printf("\n🔗 Clawrus — Pipeline Mode | Group: %s | Steps: %d\n\n", groupName, total)
+
+	for i, t := range threads {
+		name := t.Name
+		if name == "" {
+			name = t.ID
+		}
+
+		// Apply template substitution
+		stepMsg := applyTemplate(msg, name, groupName, presetName)
+
+		fmt.Printf("→ [step %d/%d] %s: sending...\n", i+1, total, name)
+
+		model := resolveModel(g.Model, t.Model, flagModel)
+		thinking := resolveThinking(g.Thinking, t.Thinking, flagThinking)
+		timeout := resolveTimeout(g.Timeout, t.Timeout, flagTimeout)
+
+		resp, err := gw.SendMessage(t.ID, stepMsg, model, thinking, groupName, presetName, timeout)
+		if err != nil {
+			fmt.Printf("  ⚠ [step %d/%d] %s: send failed: %s\n", i+1, total, name, err)
+			fmt.Printf("  ↳ passing original message to next step\n")
+			continue
+		}
+
+		// Poll for reply
+		reply, err := gw.PollReply(t.ID, resp.MessageID, gatherTimeout)
+		if err != nil {
+			fmt.Printf("  ⚠ [step %d/%d] %s: poll error: %s\n", i+1, total, name, err)
+			fmt.Printf("  ↳ passing original message to next step\n")
+			continue
+		}
+		if reply == "" {
+			fmt.Printf("  ⚠ [step %d/%d] %s: no reply within timeout\n", i+1, total, name)
+			fmt.Printf("  ↳ passing original message to next step\n")
+			continue
+		}
+
+		fmt.Printf("  ✓ [step %d/%d] %s: %s\n", i+1, total, name, reply)
+		msg = reply
+	}
+
+	fmt.Printf("\n🏁 Pipeline complete. Final output:\n%s\n", msg)
+	return nil
+}
+
+// runPoll sends to all threads in parallel (broadcast) then collects replies into a status table.
+func runPoll(gw *gateway.Client, g types.Group, groupName, presetName string, results []types.RunResult, gatherTimeout time.Duration) error {
+	// Poll for replies in parallel
+	var wg sync.WaitGroup
+	for i, r := range results {
+		if !r.OK {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, threadID, afterID string) {
+			defer wg.Done()
+			reply, err := gw.PollReply(threadID, afterID, gatherTimeout)
+			if err != nil {
+				results[idx].Reply = fmt.Sprintf("(poll error: %s)", err)
+			} else if reply == "" {
+				results[idx].Reply = "(no reply within timeout)"
+			} else {
+				results[idx].Reply = reply
+			}
+		}(i, r.ThreadID, r.SentMessageID)
+	}
+	wg.Wait()
+
+	// Print status table
+	fmt.Printf("\n📡 Clawrus — Poll Results | Group: %s | Threads: %d\n\n", groupName, len(g.Threads))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "THREAD\tSTATUS\tREPLY")
+	for _, r := range results {
+		status := "✅"
+		if !r.OK {
+			status = "❌"
+		}
+		reply := r.Reply
+		if reply == "" && !r.OK {
+			reply = r.Error
+		}
+		// Truncate reply to 80 chars
+		if len(reply) > 80 {
+			reply = reply[:77] + "..."
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", r.ThreadName, status, reply)
+	}
+	w.Flush()
 
 	return nil
 }
