@@ -337,12 +337,15 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 	return "", nil
 }
 
-// SummarizeReplies sends replies to OpenClaw gateway's /api/ai/complete for LLM summarization.
+// SummarizeReplies sends replies to OpenClaw gateway's /v1/chat/completions for LLM summarization.
 // Returns empty string if the endpoint is not available (404).
 func SummarizeReplies(gatewayURL, replies string) (string, error) {
 	reqBody := map[string]interface{}{
-		"prompt": "Summarize these agent replies into a concise unified status:\n" + replies,
-		"model":  "glm-5-turbo",
+		"model": "openclaw",
+		"messages": []map[string]string{
+			{"role": "user", "content": "Summarize these agent replies into a concise unified status:\n" + replies},
+		},
+		"stream": false,
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -350,12 +353,16 @@ func SummarizeReplies(gatewayURL, replies string) (string, error) {
 		return "", err
 	}
 
-	url := gatewayURL + "/api/ai/complete"
+	url := gatewayURL + "/v1/chat/completions"
 	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-openclaw-agent-id", "main")
+	if token := DiscoverAuthToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := httpClient.Do(req)
