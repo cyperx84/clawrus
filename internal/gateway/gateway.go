@@ -75,29 +75,28 @@ func pingGateway(baseURL string) bool {
 	return false
 }
 
-// SendMessage sends a message to a thread via sessions_send
-type SendRequest struct {
-	Message    string `json:"message"`
-	SessionKey string `json:"sessionKey,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Thinking   string `json:"thinking,omitempty"`
+// SendMessage sends a message to a thread via /tools/invoke
+type ToolInvokeRequest struct {
+	Tool string                 `json:"tool"`
+	Args map[string]interface{} `json:"args"`
 }
 
 type SendResponse struct {
 	OK      bool   `json:"ok"`
+	Status  string `json:"status,omitempty"`
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 
 func (c *Client) SendMessage(threadID, message, model, thinking string, timeout time.Duration) (*SendResponse, error) {
-	reqBody := SendRequest{
-		Message: message,
-	}
-	if model != "" {
-		reqBody.Model = model
-	}
-	if thinking != "" {
-		reqBody.Thinking = thinking
+	reqBody := ToolInvokeRequest{
+		Tool: "message",
+		Args: map[string]interface{}{
+			"action":  "send",
+			"channel": "discord",
+			"target":  threadID,
+			"message": message,
+		},
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -105,19 +104,13 @@ func (c *Client) SendMessage(threadID, message, model, thinking string, timeout 
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/v1/sessions/send", c.BaseURL)
+	url := fmt.Sprintf("%s/tools/invoke", c.BaseURL)
 	httpClient := &http.Client{Timeout: timeout}
 	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-	if c.AgentID != "" {
-		req.Header.Set("X-Agent-ID", c.AgentID)
-	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -126,9 +119,17 @@ func (c *Client) SendMessage(threadID, message, model, thinking string, timeout 
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gateway error (%d): %s", resp.StatusCode, string(body))
+	}
+
 	var result SendResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("gateway returned non-JSON: %s", string(body))
+	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("gateway: %s", result.Error)
 	}
 	return &result, nil
 }
@@ -172,14 +173,28 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 
 	for time.Now().Before(deadline) {
-		url := fmt.Sprintf("%s/api/channels/%s/messages?limit=5&after=%s", c.BaseURL, threadID, afterMessageID)
-		req, err := http.NewRequest("GET", url, nil)
+		reqBody := ToolInvokeRequest{
+			Tool: "message",
+			Args: map[string]interface{}{
+				"action":  "read",
+				"channel": "discord",
+				"target":  threadID,
+				"limit":   5,
+				"after":   afterMessageID,
+			},
+		}
+
+		data, err := json.Marshal(reqBody)
 		if err != nil {
 			return "", err
 		}
-		if c.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+		url := fmt.Sprintf("%s/tools/invoke", c.BaseURL)
+		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+		if err != nil {
+			return "", err
 		}
+		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -189,6 +204,11 @@ func (c *Client) PollReply(threadID, afterMessageID string, gatherTimeout time.D
 
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			time.Sleep(3 * time.Second)
+			continue
+		}
 
 		var messages []map[string]interface{}
 		if err := json.Unmarshal(body, &messages); err != nil {
